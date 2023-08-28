@@ -22,7 +22,26 @@ import (
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 )
+
+// instrumentForRuntimeCoverage runs "go tool cover" on a bunch of source
+// files belonging to the same package to produce a coverage-instrumented
+// version of them
+func instrumentForRuntimeCoverage(goenv *env, coverVar, mode, outFileList, pkgcfg string, srcs []string) ([]string, error) {
+	args := []string{"-pkgcfg", pkgcfg, "-var", coverVar, "-mode", mode, "-outfilelist", outFileList}
+	args = append(args, srcs...)
+	goargs := goenv.goTool("cover", args...)
+	if err := goenv.runCommand(goargs); err != nil {
+		return nil, err
+	}
+	fileCont, err := os.ReadFile(outFileList)
+	if err != nil {
+		return nil, err
+	}
+	outNames := strings.Split(string(fileCont), "\n")
+	return outNames, nil
+}
 
 // instrumentForCoverage runs "go tool cover" on a source file to produce
 // a coverage-instrumented version of the file. It also registers the file

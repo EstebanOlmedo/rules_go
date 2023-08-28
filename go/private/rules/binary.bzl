@@ -402,6 +402,12 @@ _go_binary_kwargs = {
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
+        "runtime_coverage": attr.bool(
+            default = False,
+            doc = """Builds an instrumented binary using go1.20 runtime coverage
+            feature. Similar behaviour to `go build -cover`
+            """,
+        )
     },
     "toolchains": [GO_TOOLCHAIN],
     "doc": """This builds an executable from a set of source files,

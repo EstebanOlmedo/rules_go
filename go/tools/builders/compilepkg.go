@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -56,6 +57,7 @@ func compilePkg(args []string) error {
 	var testFilter string
 	var gcFlags, asmFlags, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags quoteMultiFlag
 	var coverFormat string
+	var runtimeCoverage bool
 	fs.Var(&unfilteredSrcs, "src", ".go, .c, .cc, .m, .mm, .s, or .S file to be filtered and compiled")
 	fs.Var(&coverSrcs, "cover", ".go file that should be instrumented for coverage (must also be a -src)")
 	fs.Var(&embedSrcs, "embedsrc", "file that may be compiled into the package with a //go:embed directive")
@@ -81,6 +83,8 @@ func compilePkg(args []string) error {
 	fs.StringVar(&testFilter, "testfilter", "off", "Controls test package filtering")
 	fs.StringVar(&coverFormat, "cover_format", "", "Emit source file paths in coverage instrumentation suitable for the specified coverage format")
 	fs.Var(&recompileInternalDeps, "recompile_internal_deps", "The import path of the direct dependencies that needs to be recompiled.")
+	fs.BoolVar(&runtimeCoverage, "runtime_coverage", false, "Controls whether the sources should be compiled for runtime coverage or not")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,7 +162,8 @@ func compilePkg(args []string) error {
 		outFactsPath,
 		cgoExportHPath,
 		coverFormat,
-		recompileInternalDeps)
+		recompileInternalDeps,
+		runtimeCoverage)
 }
 
 func compileArchive(
@@ -189,6 +194,7 @@ func compileArchive(
 	cgoExportHPath string,
 	coverFormat string,
 	recompileInternalDeps []string,
+	runtimeCoverage bool,
 ) error {
 	workDir, cleanup, err := goenv.workDir()
 	if err != nil {
@@ -267,8 +273,52 @@ func compileArchive(
 	}
 	haveCgo := len(cgoSrcs)+len(cSrcs)+len(cxxSrcs)+len(objcSrcs)+len(objcxxSrcs) > 0
 
+	coveragecfg := ""
+	if runtimeCoverage {
+		combined := append([]string{}, goSrcs...)
+		if cgoEnabled {
+			combined = append(combined, cgoSrcs...)
+		}
+		pkgcfg, err := buildCoveragecfgFileForCompile(
+			func (b *bytes.Buffer, v any) error {
+				enc := json.NewEncoder(b)
+				return enc.Encode(v)
+			},
+			packagePath,
+			packageName,
+			filepath.Dir(outPath),
+		)
+		if err != nil {
+			return err
+		}
+		outFileList, err := buildOutFileList(combined, filepath.Dir(outPath))
+		if err != nil {
+			return err
+		}
+		coverVar := fmt.Sprintf("Cover_%s_%s_%s", sanitizePathForIdentifier(importPath), sanitizePathForIdentifier(packagePath), sanitizePathForIdentifier(packageName))
+		coverFiles, err := instrumentForRuntimeCoverage(goenv, coverVar, "atomic", outFileList, pkgcfg, combined)
+		coveragecfg = fmt.Sprintf("%s/coveragecfg", filepath.Dir(outPath))
+		if err != nil {
+			return err
+		}
+		// Since go1.21 they added a new file for covervars, then a
+		// new space should be created
+		goSrcs = append(goSrcs, "")
+		copy(goSrcs[1:], goSrcs[:len(goSrcs)-1])
+		combined = append(combined, "")
+		copy(combined[1:], combined[:len(combined)-1])
+		combined[0] = coverFiles[0]
+		for i, filename := range coverFiles {
+			if i < len(goSrcs) {
+				goSrcs[i] = filename
+				nogoSrcsOrigin[filename] = combined[i]
+				continue
+			}
+			cgoSrcs[i-len(goSrcs)] = filename
+		}
+	}
 	// Instrument source files for coverage.
-	if coverMode != "" {
+	if coverMode != "" && !runtimeCoverage {
 		relCoverPath := make(map[string]string)
 		for _, s := range coverSrcs {
 			relCoverPath[abs(s)] = s
@@ -347,6 +397,10 @@ func compileArchive(
 	imports, err := checkImports(srcs.goSrcs, deps, packageListPath, importPath, recompileInternalDeps)
 	if err != nil {
 		return err
+	}
+	if runtimeCoverage {
+		imports["runtime/coverage"] = nil
+		imports["sync/atomic"] = nil
 	}
 	if cgoEnabled && len(cgoSrcs) != 0 {
 		// cgo generated code imports some extra packages.
@@ -467,7 +521,7 @@ func compileArchive(
 	}
 
 	// Compile the filtered .go files.
-	if err := compileGo(goenv, goSrcs, packagePath, importcfgPath, embedcfgPath, asmHdrPath, symabisPath, gcFlags, outPath); err != nil {
+	if err := compileGo(goenv, goSrcs, packagePath, importcfgPath, embedcfgPath, asmHdrPath, symabisPath, coveragecfg, gcFlags, outPath); err != nil {
 		return err
 	}
 
@@ -537,7 +591,7 @@ func compileArchive(
 	return appendFiles(goenv, outXPath, []string{pkgDefPath})
 }
 
-func compileGo(goenv *env, srcs []string, packagePath, importcfgPath, embedcfgPath, asmHdrPath, symabisPath string, gcFlags []string, outPath string) error {
+func compileGo(goenv *env, srcs []string, packagePath, importcfgPath, embedcfgPath, asmHdrPath, symabisPath, coveragecfg string, gcFlags []string, outPath string) error {
 	args := goenv.goTool("compile")
 	args = append(args, "-p", packagePath, "-importcfg", importcfgPath, "-pack")
 	if embedcfgPath != "" {
@@ -548,6 +602,9 @@ func compileGo(goenv *env, srcs []string, packagePath, importcfgPath, embedcfgPa
 	}
 	if symabisPath != "" {
 		args = append(args, "-symabis", symabisPath)
+	}
+	if coveragecfg != "" {
+		args = append(args, fmt.Sprintf("-coveragecfg=%s", coveragecfg))
 	}
 	args = append(args, gcFlags...)
 	args = append(args, "-o", outPath)

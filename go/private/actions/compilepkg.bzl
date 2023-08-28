@@ -151,6 +151,9 @@ def emit_compilepkg(
         if clinkopts:
             args.add("-ldflags", quote_opts(clinkopts))
 
+    if go.runtime_coverage:
+        args.add("-runtime_coverage", "true")
+
     go.actions.run(
         inputs = inputs,
         outputs = outputs,

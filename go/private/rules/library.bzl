@@ -185,6 +185,11 @@ go_library = rule(
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
+        "runtime_coverage" : attr.bool(
+            doc = """Builds using the runtime code coverage feature introduced in go 1,20. Similar behaviour
+            to `go build -cover`
+            """,
+        ),
     },
     toolchains = [GO_TOOLCHAIN],
     doc = """This builds a Go library from a set of source files that are all part of

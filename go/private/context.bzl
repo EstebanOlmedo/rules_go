@@ -398,6 +398,11 @@ def go_context(ctx, attr = None):
     """
     if not attr:
         attr = ctx.attr
+
+    runtime_coverage = False
+    if getattr(attr, "runtime_coverage", False):
+        runtime_coverage = attr.runtime_coverage
+
     toolchain = ctx.toolchains[GO_TOOLCHAIN]
     cgo_context_info = None
     go_config_info = None
@@ -530,6 +535,7 @@ def go_context(ctx, attr = None):
         stamp = mode.stamp,
         label = ctx.label,
         cover_format = mode.cover_format,
+        runtime_coverage = runtime_coverage,
         # Action generators
         archive = toolchain.actions.archive,
         binary = toolchain.actions.binary,
@@ -589,6 +595,9 @@ go_context_data = rule(
         ),
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+        "runtime_coverage": attr.bool(
+            default = False
         ),
     },
     doc = """go_context_data gathers information about the build configuration.
